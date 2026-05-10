@@ -20,14 +20,6 @@ on:
         required: true
         default: '64'
 
-      package_format:
-        description: >
-          Package Format.
-        required: true
-        default: 'apk'
-        type: choice
-        options:
-          - apk
 
 # ─── Global defaults ─────────────────────────────────────────────────────────
 defaults:
@@ -67,7 +59,7 @@ jobs:
 
   # ── 2. Build the package ───────────────────────────────────────────────────
   build:
-    name: Build opensoho (${{ needs.resolve-version.outputs.version }} · ${{ inputs.target }}/${{ inputs.subtarget }} · ${{ inputs.package_format }})
+    name: Build opensoho (${{ needs.resolve-version.outputs.version }} · ${{ inputs.target }}/${{ inputs.subtarget }})
     needs: resolve-version
     runs-on: ubuntu-22.04
 
@@ -75,19 +67,17 @@ jobs:
       OPENWRT_VERSION: ${{ needs.resolve-version.outputs.version }}
       TARGET:          ${{ inputs.target }}
       SUBTARGET:       ${{ inputs.subtarget }}
-      PKG_FORMAT:      ${{ inputs.package_format }}
       PKG_NAME:        opensoho
 
     steps:
-      # ── 2a. Validate APK version requirement ──────────────────────────────
-      - name: Validate APK/version compatibility
-        if: inputs.package_format == 'apk'
+      # ── 2a. Validate minimum OpenWrt version ─────────────────────────────
+      # APK (the only supported format) requires OpenWrt 24.10+.
+      - name: Validate minimum OpenWrt version
         run: |
           MAJOR=$(echo "${OPENWRT_VERSION}" | cut -d. -f1)
           MINOR=$(echo "${OPENWRT_VERSION}" | cut -d. -f2)
-          # APK support was introduced in 24.10
           if (( MAJOR < 24 )) || ( (( MAJOR == 24 )) && (( MINOR < 10 )) ); then
-            echo "::error::APK package format requires OpenWrt 24.10 or newer (got ${OPENWRT_VERSION})."
+            echo "::error::This package requires OpenWrt 24.10 or newer (got ${OPENWRT_VERSION})."
             exit 1
           fi
 
@@ -194,29 +184,9 @@ jobs:
           echo "CONFIG_GOLANG_EXTERNAL_BOOTSTRAP_ROOT=\"${GOROOT}\"" >> .config
 
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" >> .config
-
-          if [[ "${PKG_FORMAT}" == "apk" ]]; then
-            echo "CONFIG_USE_APK=y" >> .config
-          else
-            echo "# CONFIG_USE_APK is not set" >> .config
-          fi
+          echo "CONFIG_USE_APK=y" >> .config
 
           make defconfig 2>&1 | grep -v "^#" | head -20 || true
-
-          # ── Detect the format defconfig actually settled on ──────────────
-          # Some targets (e.g. ipq40xx on 24.10+) force CONFIG_USE_APK=y
-          # regardless of what we wrote above.  Read the resolved value back
-          # and update PKG_FORMAT so every subsequent step agrees.
-          if grep -q "^CONFIG_USE_APK=y" .config; then
-            ACTUAL_FORMAT="apk"
-          else
-            ACTUAL_FORMAT="ipk"
-          fi
-
-          if [[ "${ACTUAL_FORMAT}" != "${PKG_FORMAT}" ]]; then
-            echo "::error::Format mismatch: you requested '${PKG_FORMAT}' but the SDK for ${TARGET}/${SUBTARGET} (OpenWrt ${OPENWRT_VERSION}) enforces '${ACTUAL_FORMAT}'. Re-run with package_format=${ACTUAL_FORMAT}."
-            exit 1
-          fi
 
       # ── 2i. Cache the golang/host toolchain ───────────────────────────────
       # OpenWrt always builds its own pinned Go version from source; there is no
@@ -233,7 +203,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            sdk/build_dir/host/go-*/
+            sdk/build_dir/hostpkg/go-*/
             sdk/staging_dir/host/lib/go-*/
             sdk/staging_dir/host/bin/go
             sdk/staging_dir/host/bin/gofmt
@@ -273,8 +243,7 @@ jobs:
         run: |
           mkdir -p artifacts
 
-          EXT="${PKG_FORMAT}"
-          find sdk/bin/packages -name "*.${EXT}" | while read -r f; do
+          find sdk/bin/packages -name "*.apk" | while read -r f; do
             cp -v "$f" artifacts/
           done
 
@@ -282,7 +251,7 @@ jobs:
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
 
           if [[ "${COUNT}" -eq 0 ]]; then
-            echo "::error::No .${EXT} files found under sdk/bin/packages/"
+            echo "::error::No .apk files found under sdk/bin/packages/"
             find sdk/bin/ -type f | head -20
             exit 1
           fi
@@ -295,7 +264,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: >-
-            opensoho_${{ env.OPENWRT_VERSION }}_${{ inputs.target }}_${{ inputs.subtarget }}_${{ inputs.package_format }}
+            opensoho_${{ env.OPENWRT_VERSION }}_${{ inputs.target }}_${{ inputs.subtarget }}
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
@@ -311,7 +280,6 @@ jobs:
           |----------------|-------|
           | OpenWrt version | \`${OPENWRT_VERSION}\` |
           | Target          | \`${TARGET}/${SUBTARGET}\` |
-          | Package format  | \`${PKG_FORMAT}\` |
           | Packages built  | \`${{ steps.collect.outputs.count }}\` |
 
           $(ls artifacts/ 2>/dev/null | sed 's/^/- `/' | sed 's/$/`/')
