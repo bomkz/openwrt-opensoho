@@ -35,8 +35,6 @@ define Package/opensoho
   TITLE:=OpenSOHO — lightweight network management daemon
   URL:=https://github.com/rubenbe/opensoho
   MAINTAINER:=Your Name <your.email@example.com>
-  # GO_ARCH_DEPENDS gates the package on architectures the Go toolchain
-  # supports; no libc dep because CGO is disabled (static binary).
   DEPENDS:=$(GO_ARCH_DEPENDS)
   LICENSE:=GPL-2.0-only
   LICENSE_FILES:=LICENSE
