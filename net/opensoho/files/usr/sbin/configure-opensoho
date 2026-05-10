@@ -1,0 +1,176 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# configure-opensoho  —  interactive first-run setup helper
+# Run this on the router after installing the opensoho package.
+#
+
+. /lib/functions.sh
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+print_banner() {
+	echo "============================================"
+	echo "  OpenSOHO Configuration Helper"
+	echo "============================================"
+	echo
+}
+
+# --------------------------------------------------------------------------
+# Sanity checks
+# --------------------------------------------------------------------------
+[ -f /usr/sbin/opensoho ]       || die "opensoho binary not found — is the package installed?"
+[ -f /etc/config/opensoho ]     || die "UCI config not found at /etc/config/opensoho"
+
+print_banner
+
+# --------------------------------------------------------------------------
+# Read current values
+# --------------------------------------------------------------------------
+config_load opensoho
+config_get current_enabled  config enabled         '0'
+config_get current_secret   config shared_secret   'CHANGE_ME_REQUIRED'
+config_get current_email    config admin_email     'CHANGE_ME_REQUIRED'
+config_get current_password config admin_password  'CHANGE_ME_REQUIRED'
+config_get current_port     config http_port       '8080'
+
+echo "Current configuration:"
+echo "  Enabled       : $current_enabled"
+echo "  Admin e-mail  : $current_email"
+echo "  Shared secret : ${current_secret%????????????????????????????????}[hidden]"
+echo "  HTTP port     : $current_port"
+echo
+
+# --------------------------------------------------------------------------
+# Check if reconfiguration is actually needed
+# --------------------------------------------------------------------------
+needs_config=0
+[ "$current_secret"   = 'CHANGE_ME_REQUIRED' ] && { echo "  [!] shared_secret not set"; needs_config=1; }
+[ "$current_email"    = 'CHANGE_ME_REQUIRED' ] && { echo "  [!] admin_email not set";   needs_config=1; }
+[ "$current_password" = 'CHANGE_ME_REQUIRED' ] && { echo "  [!] admin_password not set"; needs_config=1; }
+
+if [ "$needs_config" -eq 0 ] && [ "$current_enabled" = '1' ]; then
+	echo "OpenSOHO looks fully configured."
+	printf "Reconfigure anyway? [y/N] "
+	read -r ans
+	case "$ans" in [Yy]*) ;; *) exit 0 ;; esac
+fi
+
+# --------------------------------------------------------------------------
+# Choose credential mode
+# --------------------------------------------------------------------------
+echo
+echo "============================================"
+echo "  Credential Setup"
+echo "============================================"
+echo
+echo "  1) Generate secure random credentials (recommended)"
+echo "  2) Enter credentials manually"
+echo "  3) Exit without changes"
+echo
+printf "Choose [1-3]: "
+read -r OPTION
+
+case "$OPTION" in
+	1)
+		SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+		PASSWORD=$(head -c 16 /dev/urandom | base64 | tr -d '+/=' | cut -c1-16)
+		printf "\nAdmin e-mail [admin@example.com]: "
+		read -r EMAIL
+		[ -z "$EMAIL" ] && EMAIL="admin@example.com"
+		echo
+		echo "  E-mail   : $EMAIL"
+		echo "  Password : $PASSWORD  ← save this now"
+		echo "  Secret   : [randomly generated]"
+		;;
+	2)
+		printf "\nAdmin e-mail: "
+		read -r EMAIL
+		[ -z "$EMAIL" ] && die "E-mail cannot be empty"
+
+		printf "Admin password (min 8 chars): "
+		read -r PASSWORD
+		[ ${#PASSWORD} -lt 8 ] && die "Password must be at least 8 characters"
+
+		printf "Shared secret (Enter to generate): "
+		read -r SECRET
+		[ -z "$SECRET" ] && {
+			SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+			echo "  → generated random secret"
+		}
+		;;
+	*)
+		echo "Exiting — no changes made."
+		exit 0
+		;;
+esac
+
+# --------------------------------------------------------------------------
+# Confirm before writing
+# --------------------------------------------------------------------------
+echo
+printf "Apply this configuration? [y/N] "
+read -r CONFIRM
+case "$CONFIRM" in [Yy]*) ;; *)
+	echo "Cancelled — no changes made."
+	exit 0
+	;;
+esac
+
+# --------------------------------------------------------------------------
+# Write UCI settings
+# --------------------------------------------------------------------------
+uci batch <<EOF
+set opensoho.config.shared_secret=$SECRET
+set opensoho.config.admin_email=$EMAIL
+set opensoho.config.admin_password=$PASSWORD
+set opensoho.config.enabled=1
+EOF
+uci commit opensoho
+echo
+echo "Configuration saved."
+
+# --------------------------------------------------------------------------
+# Optionally start the service
+# --------------------------------------------------------------------------
+printf "\nEnable and start OpenSOHO now? [Y/n] "
+read -r START_NOW
+case "$START_NOW" in
+	[Nn]*)
+		echo
+		echo "Start manually when ready:"
+		echo "  /etc/init.d/opensoho enable"
+		echo "  /etc/init.d/opensoho start"
+		;;
+	*)
+		/etc/init.d/opensoho enable
+		/etc/init.d/opensoho start
+		sleep 2
+		if /etc/init.d/opensoho running >/dev/null 2>&1; then
+			echo "Service started successfully."
+		else
+			echo "Service may not have started — check logs with:"
+			echo "  logread | grep opensoho"
+		fi
+		;;
+esac
+
+# --------------------------------------------------------------------------
+# Print summary
+# --------------------------------------------------------------------------
+LAN_IP=$(uci -q get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+HTTP_PORT=$(uci -q get opensoho.config.http_port 2>/dev/null || echo "8080")
+
+echo
+echo "============================================"
+echo "  Setup complete — save these credentials"
+echo "============================================"
+echo
+echo "  URL      : http://${LAN_IP}:${HTTP_PORT}"
+echo "  E-mail   : $EMAIL"
+echo "  Password : $PASSWORD"
+echo
+echo "To reconfigure later, re-run this script or use uci directly:"
+echo "  uci set opensoho.config.admin_email='new@example.com'"
+echo "  uci commit opensoho && /etc/init.d/opensoho restart"
+echo

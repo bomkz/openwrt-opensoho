@@ -1,0 +1,23 @@
+# ============================================================
+# Custom feed configuration for openwrt-opensoho
+# ============================================================
+#
+# Add ONE of the following lines to feeds.conf (or feeds.conf.default)
+# in your cloned OpenWrt source tree, then run:
+#
+#   ./scripts/feeds update my_packages
+#   ./scripts/feeds install opensoho
+#   make menuconfig          # find under Network → OpenSOHO
+#   make package/opensoho/compile
+#
+# ── Option A: track the remote Git repo (recommended for CI) ──────────────
+src-git my_packages https://github.com/YOUR_USERNAME/openwrt-opensoho.git
+
+# ── Option B: pin to a specific branch ────────────────────────────────────
+#src-git my_packages https://github.com/YOUR_USERNAME/openwrt-opensoho.git;main
+
+# ── Option C: use a local checkout (handy for development) ────────────────
+#src-link my_packages /path/to/openwrt-opensoho
+#
+# NOTE: src-link symlinks the directory into feeds/, so edits to your
+# local tree are picked up immediately without another `feeds update`.

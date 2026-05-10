@@ -1,0 +1,84 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=99
+STOP=10
+
+USE_PROCD=1
+
+PROG=/usr/sbin/opensoho
+INIT_STAMP=/etc/opensoho/.initialized
+
+start_service() {
+	local enabled shared_secret admin_email admin_password http_address http_port
+
+	config_load opensoho
+	config_get_bool enabled  config enabled         0
+	config_get     shared_secret  config shared_secret   'CHANGE_ME_REQUIRED'
+	config_get     admin_email    config admin_email     'CHANGE_ME_REQUIRED'
+	config_get     admin_password config admin_password  'CHANGE_ME_REQUIRED'
+	config_get     http_address   config http_address    '0.0.0.0'
+	config_get     http_port      config http_port       '8080'
+
+	[ "$enabled" -eq 0 ] && {
+		echo "OpenSOHO is disabled. Enable with:"
+		echo "  uci set opensoho.config.enabled='1' && uci commit opensoho"
+		return 0
+	}
+
+	# Validate required fields before attempting to start.
+	local cfg_ok=1
+	[ "$shared_secret"  = 'CHANGE_ME_REQUIRED' ] && {
+		echo "Error: shared_secret is not set in /etc/config/opensoho"
+		cfg_ok=0
+	}
+	[ "$admin_email"    = 'CHANGE_ME_REQUIRED' ] && {
+		echo "Error: admin_email is not set in /etc/config/opensoho"
+		cfg_ok=0
+	}
+	[ "$admin_password" = 'CHANGE_ME_REQUIRED' ] && {
+		echo "Error: admin_password is not set in /etc/config/opensoho"
+		cfg_ok=0
+	}
+	[ "$cfg_ok" -eq 0 ] && {
+		echo "Run /usr/sbin/configure-opensoho to set up credentials."
+		return 1
+	}
+
+	# One-time superuser bootstrap.  We create the stamp directory first
+	# so the check and creation are both atomic on a single filesystem.
+	if [ ! -f "$INIT_STAMP" ]; then
+		mkdir -p "$(dirname "$INIT_STAMP")"
+		echo "Initialising OpenSOHO superuser ($admin_email)…"
+		OPENSOHO_SHARED_SECRET="$shared_secret" \
+			"$PROG" superuser upsert "$admin_email" "$admin_password" || {
+				echo "Error: superuser initialisation failed."
+				return 1
+			}
+		touch "$INIT_STAMP"
+	fi
+
+	procd_open_instance
+	procd_set_param command "$PROG" serve \
+		--http "${http_address}:${http_port}"
+	procd_set_param env \
+		OPENSOHO_SHARED_SECRET="$shared_secret"
+	# Restart up to 5 times; wait 5 s between attempts; reset counter after 1 h.
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param user  root
+	procd_set_param pidfile /var/run/opensoho.pid
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger opensoho
+}
+
+# A proper reload sends SIGHUP if the binary supports it; otherwise
+# fall back to a full stop/start cycle.
+reload_service() {
+	stop
+	start
+}

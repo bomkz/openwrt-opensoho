@@ -1,0 +1,7 @@
+config opensoho 'config'
+	option enabled '0'
+	option shared_secret 'CHANGE_ME_REQUIRED'
+	option admin_email 'CHANGE_ME_REQUIRED'
+	option admin_password 'CHANGE_ME_REQUIRED'
+	option http_address '0.0.0.0'
+	option http_port '8080'
