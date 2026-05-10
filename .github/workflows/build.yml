@@ -24,10 +24,9 @@ on:
         description: >
           Package Format.
         required: true
-        default: 'ipk'
+        default: 'apk'
         type: choice
         options:
-          - ipk
           - apk
 
 # ─── Global defaults ─────────────────────────────────────────────────────────
@@ -203,6 +202,21 @@ jobs:
           fi
 
           make defconfig 2>&1 | grep -v "^#" | head -20 || true
+
+          # ── Detect the format defconfig actually settled on ──────────────
+          # Some targets (e.g. ipq40xx on 24.10+) force CONFIG_USE_APK=y
+          # regardless of what we wrote above.  Read the resolved value back
+          # and update PKG_FORMAT so every subsequent step agrees.
+          if grep -q "^CONFIG_USE_APK=y" .config; then
+            ACTUAL_FORMAT="apk"
+          else
+            ACTUAL_FORMAT="ipk"
+          fi
+
+          if [[ "${ACTUAL_FORMAT}" != "${PKG_FORMAT}" ]]; then
+            echo "::error::Format mismatch: you requested '${PKG_FORMAT}' but the SDK for ${TARGET}/${SUBTARGET} (OpenWrt ${OPENWRT_VERSION}) enforces '${ACTUAL_FORMAT}'. Re-run with package_format=${ACTUAL_FORMAT}."
+            exit 1
+          fi
 
       # ── 2i. Cache the golang/host toolchain ───────────────────────────────
       # OpenWrt always builds its own pinned Go version from source; there is no
