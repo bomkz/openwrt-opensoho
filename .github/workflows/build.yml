@@ -1,4 +1,4 @@
-name: Build
+name: Build opensoho package
 
 # ─── Triggers ────────────────────────────────────────────────────────────────
 on:
@@ -6,7 +6,7 @@ on:
     inputs:
       openwrt_version:
         description: >
-          OpenWrt Release Version (Note: latest means build against latest release, not latest commit)
+          OpenWrt version (Note, latest means build against latest release, not latest commit)
         required: true
         default: 'latest'
 
@@ -22,7 +22,7 @@ on:
 
       package_format:
         description: >
-          Package Format
+          Package Format.
         required: true
         default: 'ipk'
         type: choice
@@ -143,8 +143,7 @@ jobs:
       - name: Download & extract SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
-          wget -q --show-progress "${{ steps.sdk.outputs.sdk_url }}" \
-               -O sdk_download
+          wget -q "${{ steps.sdk.outputs.sdk_url }}" -O sdk_download
 
           mkdir -p sdk
           tar -xf sdk_download --strip-components=1 -C sdk
@@ -156,26 +155,59 @@ jobs:
         with:
           path: src/openwrt-opensoho
 
-      # ── 2f. Configure feeds ───────────────────────────────────────────────
+      # ── 2f. Install Go on the runner ──────────────────────────────────────
+      # We point OpenWrt at this installation via GOLANG_EXTERNAL_BOOTSTRAP_ROOT
+      # so it skips downloading and building its own Go toolchain entirely —
+      # the biggest single time-saver for a Go package build.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false   # module cache handled below
+
+      # Cache Go module downloads across runs to avoid re-fetching on every build.
+      - name: Cache Go module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-mod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-mod-${{ runner.os }}-
+
+      # ── 2g. Configure feeds ───────────────────────────────────────────────
       - name: Set up feeds
         working-directory: sdk
         run: |
-          # Keep official feeds (packages, luci, etc.) and append ours.
-          # We use src-link so the feed reads directly from the checkout above;
-          # no extra network round-trip and always reflects the current commit.
+          # Rewrite feeds.conf.default to only the feeds we actually need:
+          #   packages  — provides golang/host (build dependency)
+          #   opensoho_pkg — our package, via src-link into the local checkout
+          #
+          # This avoids cloning luci, routing, telephony, etc. which we don't need
+          # and which add several minutes of git-clone time.
+          #
+          # The SDK ships feeds.conf.default with pinned commits for each feed,
+          # so we preserve the packages feed line verbatim to keep version alignment.
+          grep -E '^src-(git|gz) packages ' feeds.conf.default \
+            > feeds.conf.default.new
           echo "src-link opensoho_pkg ${{ github.workspace }}/src/openwrt-opensoho" \
-            >> feeds.conf.default
+            >> feeds.conf.default.new
+          mv feeds.conf.default.new feeds.conf.default
 
-          ./scripts/feeds update -a
-          # Install only our feed's packages to avoid conflicts
-          ./scripts/feeds install -a -p opensoho_pkg
-          # Also install golang from the packages feed (build dependency)
+          ./scripts/feeds update packages opensoho_pkg
           ./scripts/feeds install golang
+          ./scripts/feeds install -a -p opensoho_pkg
 
-      # ── 2g. Generate .config ──────────────────────────────────────────────
+      # ── 2h. Generate .config ──────────────────────────────────────────────
       - name: Configure build
         working-directory: sdk
         run: |
+          # Point OpenWrt at the host Go installation — skips the
+          # golang/host download + compile step completely.
+          GOROOT="$(go env GOROOT)"
+          echo "CONFIG_GOLANG_EXTERNAL_BOOTSTRAP_ROOT=\"${GOROOT}\"" >> .config
+
           # Select our package for compilation
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" >> .config
 
@@ -188,16 +220,17 @@ jobs:
 
           make defconfig 2>&1 | grep -v "^#" | head -20 || true
 
-      # ── 2h. Build ─────────────────────────────────────────────────────────
+      # ── 2i. Build ─────────────────────────────────────────────────────────
       - name: Build package
         working-directory: sdk
         run: |
+          # Stream build output live (no | tail — that hides all output until
+          # make exits, making the job appear frozen for the entire build).
           make "package/${PKG_NAME}/compile" \
                V=s \
                -j$(nproc) \
-               2>&1 | tee /tmp/build.log | tail -30
+               2>&1 | tee /tmp/build.log
 
-          # Surface errors loudly if make failed
           if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
             echo "::error::Build failed — last 60 lines of log:"
             tail -60 /tmp/build.log
