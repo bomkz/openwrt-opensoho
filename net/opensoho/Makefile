@@ -1,7 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-only
-#
-# Copyright (C) 2024 Your Name <your.email@example.com>
-#
 
 include $(TOPDIR)/rules.mk
 
@@ -32,12 +29,11 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 define Package/opensoho
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=OpenSOHO — lightweight network management daemon
+  TITLE:=OpenSOHO
   URL:=https://github.com/rubenbe/opensoho
-  MAINTAINER:=Your Name <your.email@example.com>
+  MAINTAINER:=Bomkz Ookami <bomkz.f45a@outlook.com>
   DEPENDS:=$(GO_ARCH_DEPENDS)
   LICENSE:=GPL-2.0-only
-  LICENSE_FILES:=LICENSE
 endef
 
 define Package/opensoho/description
