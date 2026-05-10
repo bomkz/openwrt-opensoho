@@ -1,4 +1,4 @@
-name: Build opensoho package
+name: Build
 
 # ─── Triggers ────────────────────────────────────────────────────────────────
 on:
@@ -6,7 +6,7 @@ on:
     inputs:
       openwrt_version:
         description: >
-          OpenWrt version (Note, latest means build against latest release, not latest commit)
+          OpenWrt version (Note: latest means build against latest release, not latest commit)
         required: true
         default: 'latest'
 
@@ -156,39 +156,25 @@ jobs:
           path: src/openwrt-opensoho
 
       # ── 2f. Install Go on the runner ──────────────────────────────────────
-      # We point OpenWrt at this installation via GOLANG_EXTERNAL_BOOTSTRAP_ROOT
-      # so it skips downloading and building its own Go toolchain entirely —
-      # the biggest single time-saver for a Go package build.
+      # OpenWrt uses the host Go as the first link in its bootstrap chain
+      # (GOROOT_BOOTSTRAP), which speeds up the cache-miss case.
+      # On cache hits this step is near-instant anyway.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-          cache: false   # module cache handled below
-
-      # Cache Go module downloads across runs to avoid re-fetching on every build.
-      - name: Cache Go module cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-mod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            go-mod-${{ runner.os }}-
+          cache: false
 
       # ── 2g. Configure feeds ───────────────────────────────────────────────
       - name: Set up feeds
         working-directory: sdk
         run: |
           # Rewrite feeds.conf.default to only the feeds we actually need:
-          #   packages  — provides golang/host (build dependency)
+          #   packages     — provides golang/host (build dependency)
           #   opensoho_pkg — our package, via src-link into the local checkout
           #
-          # This avoids cloning luci, routing, telephony, etc. which we don't need
-          # and which add several minutes of git-clone time.
-          #
-          # The SDK ships feeds.conf.default with pinned commits for each feed,
-          # so we preserve the packages feed line verbatim to keep version alignment.
+          # Preserve the pinned commit from the SDK's original file so package
+          # versions stay aligned with this OpenWrt release.
           grep -E '^src-(git|gz) packages ' feeds.conf.default \
             > feeds.conf.default.new
           echo "src-link opensoho_pkg ${{ github.workspace }}/src/openwrt-opensoho" \
@@ -203,15 +189,13 @@ jobs:
       - name: Configure build
         working-directory: sdk
         run: |
-          # Point OpenWrt at the host Go installation — skips the
-          # golang/host download + compile step completely.
+          # Use the runner's Go as the initial bootstrap compiler so the
+          # golang/host build (when it does run) skips downloading a bootstrap.
           GOROOT="$(go env GOROOT)"
           echo "CONFIG_GOLANG_EXTERNAL_BOOTSTRAP_ROOT=\"${GOROOT}\"" >> .config
 
-          # Select our package for compilation
           echo "CONFIG_PACKAGE_${PKG_NAME}=m" >> .config
 
-          # Package format
           if [[ "${PKG_FORMAT}" == "apk" ]]; then
             echo "CONFIG_USE_APK=y" >> .config
           else
@@ -220,12 +204,44 @@ jobs:
 
           make defconfig 2>&1 | grep -v "^#" | head -20 || true
 
-      # ── 2i. Build ─────────────────────────────────────────────────────────
-      - name: Build package
+      # ── 2i. Cache the golang/host toolchain ───────────────────────────────
+      # OpenWrt always builds its own pinned Go version from source; there is no
+      # skip flag.  GOLANG_EXTERNAL_BOOTSTRAP_ROOT only sets the *initial*
+      # bootstrap compiler — it does not bypass the full 1.17→1.20→1.22→1.24
+      # build chain.  Caching the compiled output is the only reliable way to
+      # avoid that 7-10 minute step on every run.
+      #
+      # Key on the SDK filename: it encodes the OpenWrt release, target,
+      # subtarget, and host GCC version, which together uniquely determine the
+      # golang/host output.
+      - name: Cache golang host toolchain
+        id: cache-golang-host
+        uses: actions/cache@v4
+        with:
+          path: |
+            sdk/build_dir/host/go-*/
+            sdk/staging_dir/host/lib/go-*/
+            sdk/staging_dir/host/bin/go
+            sdk/staging_dir/host/bin/gofmt
+          key: golang-host-${{ steps.sdk.outputs.sdk_file }}
+
+      - name: Build golang host toolchain
+        if: steps.cache-golang-host.outputs.cache-hit != 'true'
         working-directory: sdk
         run: |
-          # Stream build output live (no | tail — that hides all output until
-          # make exits, making the job appear frozen for the entire build).
+          echo "golang/host not cached — building (this takes 7-10 min, cached on next run)"
+          make package/golang/host/compile V=s -j$(nproc) 2>&1 | tee /tmp/golang-host.log
+
+          if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+            echo "::error::golang/host build failed — last 60 lines:"
+            tail -60 /tmp/golang-host.log
+            exit 1
+          fi
+
+      # ── 2j. Build opensoho ────────────────────────────────────────────────
+      - name: Build opensoho package
+        working-directory: sdk
+        run: |
           make "package/${PKG_NAME}/compile" \
                V=s \
                -j$(nproc) \
@@ -237,7 +253,7 @@ jobs:
             exit 1
           fi
 
-      # ── 2i. Collect artifacts ─────────────────────────────────────────────
+      # ── 2k. Collect artifacts ─────────────────────────────────────────────
       - name: Collect built packages
         id: collect
         run: |
@@ -260,7 +276,7 @@ jobs:
           echo "Built packages:"
           ls -lh artifacts/
 
-      # ── 2j. Upload ────────────────────────────────────────────────────────
+      # ── 2l. Upload ────────────────────────────────────────────────────────
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
@@ -270,7 +286,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ── 2k. Job summary ───────────────────────────────────────────────────
+      # ── 2m. Job summary ───────────────────────────────────────────────────
       - name: Write job summary
         if: always()
         run: |
